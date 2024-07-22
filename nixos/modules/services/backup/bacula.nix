@@ -122,11 +122,19 @@ let
       ${dir_cfg.extraDirectorConfig}
     }
 
+    ${concatStringsSep "\n" (mapAttrsToList (name: value: ''
     Catalog {
-      Name = PostgreSQL;
-      dbname = bacula;
-      user = bacula;
+      Name = "${name}"
+      ${optionalString (value.password != null) ''  password = "${value.password}"''}
+      DB Name = "${value.dbName}"
+      user = "${value.user}"
+      ${optionalString (value.dbSocket != null) ''  DB Socket = "${value.dbSocket}"''}
+      ${optionalString (value.dbAddress != null) ''  DB Address = "${value.dbAddress}"''}
+      ${optionalString (value.dbPort != null) ''  DB Port = "${toString value.dbPort}"''}
+      ${value.extraConfig}
     }
+    '') dir_cfg.catalogs )}
+
 
     Messages {
       Name = Standard;
@@ -334,6 +342,91 @@ let
     };
   };
 
+  catalogLink = name: (linkOption name "services.bacula-dir.catalog.<name>.${name}");
+  catalogOptions = {...}:
+  {
+    options = {
+      password = mkOption {
+        type = types.nullOr types.str;
+        default = "";
+        example = null;
+        description = ''
+          This specifies the password to use when logging into the database.
+          This directive is required.
+          Warning: This password gets stored world readable in the store.
+          When you want to supply it by sops-nix or similar set it to null and use ${catalogLink "extraConfig"} to import an file in the format
+          ```
+            password = "<dbPassword>"
+          ```
+        '';
+      };
+
+      dbName = mkOption {
+        type = types.str;
+        default = "bacula";
+        description = ''
+          This specifies the name of the database.
+          If you use multiple catalogs (databases), you specify which one here.
+          If you are using an external database server rather than the internal one, you must specify a name that is known to the server (i.e. you explicitly created the Bacula tables using this name.
+          This directive is required.
+        '';
+      };
+
+      user = mkOption {
+        type = types.str;
+        default = "bacula";
+        description = ''
+          This specifies what user name to use to log into the database.
+          This directive is required.
+        '';
+      };
+
+      dbSocket = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "/run/mysqld/mysqld.sock";
+        description = ''
+          This is the name of a socket to use on the local host to connect to the database.
+          This directive is used only by MySQL.
+          Normally, if neither ${catalogLink "dbSocket"} or ${catalogLink "dbAddress"} are specified, MySQL will use the default socket.
+          If ${catalogLink "dbSocket"} is specified, the MySQL server must reside on the same machine as the Director.
+        '';
+      };
+
+      dbAddress = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "localhost";
+        description = ''
+          This is the host address of the database server.
+          Normally, you would specify this instead of ${catalogLink "dbSocket"} if the database server is on another machine.
+          In that case, you will also specify ${catalogLink "dbPort"}.
+          This directive is used only by MySQL and PostgreSQL.
+          This directive is optional.
+        '';
+      };
+
+      dbPort = mkOption {
+        type = types.nullOr types.port;
+        default = null;
+        example = 3306;
+        description = ''
+          This defines the port to be used in conjunction with ${catalogLink "dbAddress"} to access the database if it is on another machine.
+          This directive is used only by MySQL and PostgreSQL.
+          This directive is optional.
+        '';
+      };
+
+      extraConfig = mkOption {
+        type =  types.lines;
+        default = "";
+        example = "@/run/secrets-renderd/dbpassword.conf";
+        description = ''
+          This allows to insert additional config to the catalog mostly usefull to not store ${catalogLink "password"} worldreadble.
+        '';
+      };
+    };
+  };
 
   deviceOptions = {...}:
   {
@@ -578,6 +671,14 @@ in {
           Whether to enable Bacula Director Daemon.
         '';
       };
+
+      catalogs = mkOption {
+        type = types.attrsOf (types.submodule catalogOptions);
+        description = ''
+          The config of the Catalogs to use.
+        '';
+      };
+
 
       name = mkOption {
         default = "${config.networking.hostName}-dir";
