@@ -16,7 +16,6 @@ let
     optionalString
     types
     ;
-  libDir = "/var/lib/bacula";
 
   yes_no = bool: if bool then "yes" else "no";
   tls_conf = tls_cfg: optionalString tls_cfg.enable (
@@ -33,14 +32,29 @@ let
       )
   );
 
+  workingDirectory = mkOption {
+        description = ''
+          This  directive is mandatory and specifies a directory in which
+          the Director may put its status files.
+          This directory should be used only by Bacula but may be shared by other Bacula daemons.
+          However, please  note, if this directory is shared with other
+          Bacula daemons (the File daemon and Storage daemon), you must
+          ensure that the Name given to each daemon is unique so that the
+          temporary filenames used do not collide.
+          The working directory specified must already exist and be readable
+          and writable by the Bacula daemon referencing it.
+        '';
+        default = "/var/lib/bacula";
+      };
+
   fd_cfg = config.services.bacula-fd;
   fd_conf = pkgs.writeText "bacula-fd.conf"
     ''
       Client {
         Name = "${fd_cfg.name}";
         FDPort = ${toString fd_cfg.port};
-        WorkingDirectory = ${libDir};
-        Pid Directory = /run;
+        WorkingDirectory = ${fd_cfg.workingDirectory};
+        Pid Directory = /run/bacula;
         ${fd_cfg.extraClientConfig}
         ${tls_conf fd_cfg.tls}
       }
@@ -67,8 +81,8 @@ let
       Storage {
         Name = "${sd_cfg.name}";
         SDPort = ${toString sd_cfg.port};
-        WorkingDirectory = ${libDir};
-        Pid Directory = /run;
+        WorkingDirectory = ${sd_cfg.workingDirectory};
+        Pid Directory = /run/bacula;
         ${sd_cfg.extraStorageConfig}
         ${tls_conf sd_cfg.tls}
       }
@@ -77,8 +91,8 @@ let
       Autochanger {
         Name = "${name}";
         Device = ${concatStringsSep ", " (map (a: "\"${a}\"") value.devices)};
-        Changer Device =  ${value.changerDevice};
-        Changer Command = ${value.changerCommand};
+        Changer Device =  "${value.changerDevice}";
+        Changer Command = "${value.changerCommand}";
         ${value.extraAutochangerConfig}
       }
       '') sd_cfg.autochanger)}
@@ -115,8 +129,8 @@ let
       Name = "${dir_cfg.name}";
       Password = ${dir_cfg.password};
       DirPort = ${toString dir_cfg.port};
-      Working Directory = ${libDir};
-      Pid Directory = /run/;
+      Working Directory = ${dir_cfg.workingDirectory};
+      Pid Directory = /run/bacula;
       QueryFile = ${pkgs.bacula}/etc/query.sql;
       ${tls_conf dir_cfg.tls}
       ${dir_cfg.extraDirectorConfig}
@@ -537,6 +551,8 @@ in {
         '';
       };
 
+      workingDirectory = workingDirectory;
+
       director = mkOption {
         default = {};
         description = ''
@@ -605,6 +621,8 @@ in {
           Director connections.
         '';
       };
+
+      workingDirectory = workingDirectory;
 
       director = mkOption {
         default = {};
@@ -703,6 +721,8 @@ in {
         '';
       };
 
+      workingDirectory = workingDirectory;
+
       password = mkOption {
         # TODO: required?
         type = types.str;
@@ -766,7 +786,8 @@ in {
         ExecStart = "${pkgs.bacula}/sbin/bacula-fd -f -u root -g bacula -c ${fd_conf}";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         LogsDirectory = "bacula";
-        StateDirectory = "bacula";
+        StateDirectory = "${fd_cfg.workingDirectory}";
+        RuntimeDirectory = "bacula";
       };
     };
 
@@ -776,10 +797,13 @@ in {
       wantedBy = [ "multi-user.target" ];
       path = [ pkgs.bacula ];
       serviceConfig = {
-        ExecStart = "${pkgs.bacula}/sbin/bacula-sd -f -u bacula -g bacula -c ${sd_conf}";
+        ExecStart = "${pkgs.bacula}/sbin/bacula-sd -f -c ${sd_conf}";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         LogsDirectory = "bacula";
         StateDirectory = "bacula";
+        RuntimeDirectory = "bacula";
+        User = config.users.users.bacula.name;
+        Group = config.users.groups.bacula.name;
       };
     };
 
@@ -791,13 +815,16 @@ in {
       wantedBy = [ "multi-user.target" ];
       path = [ pkgs.bacula ];
       serviceConfig = {
-        ExecStart = "${pkgs.bacula}/sbin/bacula-dir -f -u bacula -g bacula -c ${dir_conf}";
+        ExecStart = "${pkgs.bacula}/sbin/bacula-dir -f -c ${dir_conf}";
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         LogsDirectory = "bacula";
         StateDirectory = "bacula";
+        RuntimeDirectory = "bacula";
+        User = config.users.users.bacula.name;
+        Group = config.users.groups.bacula.name;
       };
       preStart = ''
-        if ! test -e "${libDir}/db-created"; then
+        if ! test -e "${dir_cfg.workingDirectory}/db-created"; then
             ${pkgs.postgresql}/bin/createuser --no-superuser --no-createdb --no-createrole bacula
             #${pkgs.postgresql}/bin/createdb --owner bacula bacula
 
@@ -805,7 +832,7 @@ in {
             ${pkgs.bacula}/etc/create_bacula_database postgresql
             ${pkgs.bacula}/etc/make_bacula_tables postgresql
             ${pkgs.bacula}/etc/grant_bacula_privileges postgresql
-            touch "${libDir}/db-created"
+            touch "${dir_cfg.workingDirectory}/db-created"
         else
             ${pkgs.bacula}/etc/update_bacula_tables postgresql || true
         fi
@@ -817,8 +844,8 @@ in {
     users.users.bacula = {
       group = "bacula";
       uid = config.ids.uids.bacula;
-      home = "${libDir}";
-      createHome = true;
+      #home = "${dir_cfg.workingDirectory}";
+      #createHome = false;
       description = "Bacula Daemons user";
       shell = "${pkgs.bash}/bin/bash";
     };
